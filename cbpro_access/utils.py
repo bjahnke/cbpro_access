@@ -11,6 +11,7 @@ import abstract_broker
 from coinbase_pro.client import get_client, get_messenger
 from coinbase_pro.socket import get_stream
 from abstract_broker import AbstractStreamParser, AbstractTickerStream
+from functools import reduce
 
 
 class Side:
@@ -153,7 +154,6 @@ class CbproClient:
                 "key": key,
                 "secret": secret,
                 "passphrase": passphrase,
-                "authority": "https://api.pro.coinbase.com",
             }
         )
 
@@ -253,29 +253,72 @@ class CbproClient:
             ]
         )
 
+    @staticmethod
+    def get_time_partitions(end_time, num_bars, interval_seconds):
+        """
+        calculates the start and end times required to retreive the desired number of bars
+        """
+        start = end_time - num_bars * interval_seconds
+        time_partitions = []
+        while True:
+            partial_end = start + 300 * interval_seconds
+            if partial_end > end_time:
+                break
+            time_partitions.append((start, partial_end))
+            start = partial_end
+
+        time_partitions.append((start, end_time))
+        return time_partitions
+
     def price_history(
-        self, symbol: str, interval: int, num_bars: int = None, interval_type="m"
+            self, symbol: str, interval: int, interval_type="m", back_shift=0, num_bars=300,
     ) -> pd.DataFrame:
+
+        interval_seconds = _INTERVAL[f"{interval}{interval_type}"]
         history_params = {
-            "granularity": _INTERVAL[f"{interval}{interval_type}"],
+            "granularity": interval_seconds,
             "start": "",
             "end": "",
         }
-        if num_bars is not None:
-            history_params["start"] = datetime.fromtimestamp(
-                time() - num_bars * interval
-            )
-            history_params["end"] = datetime.fromtimestamp(time())
-        data = self._client.product.candles(symbol, history_params)
 
-        data = pd.DataFrame(
-            data, columns=["time", "open", "high", "low", "close", "volume"]
-        )
+        end_time = time()
+        if back_shift is not None:
+            end_time = time() - back_shift * interval_seconds
+
+        time_partitions = self.__class__.get_time_partitions(end_time, num_bars, interval_seconds)
+        data_partitions = [pd.DataFrame()]
+        for start, end in time_partitions:
+            history_params['start'] = datetime.fromtimestamp(start)
+            history_params['end'] = datetime.fromtimestamp(end)
+            data_part = self._client.product.candles(symbol, history_params)
+            data_part = pd.DataFrame(
+                data_part, columns=["time", "open", "high", "low", "close", "volume"]
+            )
+            data_partitions.append(data_part)
+        data = pd.concat(data_partitions)
+
         data.index = data.time
         data.index = pd.to_datetime(data.index, unit="s")
-        data["symbol"] = symbol
+        # data["symbol"] = symbol
         data = data.sort_index()
-        return data[["symbol", "open", "high", "close", "low", "volume"]]
+        return data[["open", "high", "close", "low", "volume"]]
+
+    def download_price_data(self, interval, symbols=None, interval_type="m", back_shift=None, num_bars: int = None, ):
+        """get data for a set of symbols, given as a single table with multiindex columns seperated by symbol name"""
+        if symbols is None:
+            symbols = self.usd_products['id'].to_list()
+        dfs = []
+        for i, symbol in enumerate(symbols):
+            price_data = self.price_history(
+                symbol=symbol, interval=interval, interval_type=interval_type,
+                back_shift=back_shift, num_bars=num_bars
+            )
+            price_data.columns = pd.MultiIndex.from_product([[symbol], price_data.columns])
+            dfs.append(price_data)
+            print(f'{symbol} ({i}/{len(symbols)})')
+
+        dfs_merged = reduce(lambda left, right: left.join(right, how='outer'), dfs)
+        return dfs_merged
 
     # def extended_price_history(
     #     self, symbol: str, interval: int, num_bars: int = None, interval_type="m"
@@ -296,7 +339,7 @@ class CbproClient:
     #         return pd.concat([delayed_data, remaining_data])
 
     def place_order_spec(
-        self, order_spec
+            self, order_spec
     ) -> t.Union[t.Tuple[str, _OrderStatus], t.Tuple[None, None]]:
         # TODO return order id
         order_id = None
@@ -342,10 +385,10 @@ class CbProTickerStream(AbstractTickerStream):
     """
 
     def run_stream(
-        self,
-        symbols,
-        stream_generator: t.Callable[[t.List[str]], t.Any],
-        writer_send_conn,
+            self,
+            symbols,
+            stream_generator: t.Callable[[t.List[str]], t.Any],
+            writer_send_conn,
     ):
         """
         The main loop distributes messages to processes via
@@ -388,7 +431,6 @@ class CbProStreamParse(AbstractStreamParser):
         # self._prev_sequence = current_sequence
         return (float(data["price"]),) * 4
 
-
 # def get_data(symbol):
 #     return yft.yf_price_history_stream(symbol, interval=15, days=50)[0]
 
@@ -410,19 +452,19 @@ class CbProStreamParse(AbstractStreamParser):
 #     order = new_position.init_stop_loss(None)
 #     resp = client.place_order_spec(order)
 #     print("done")
-    # daily_scan = pd.read_excel(r'C:\Users\Brian\OneDrive\algo_data\csv\cbpro_scan_out.xlsx')
-    # in_symbols = daily_scan.symbol[daily_scan.score > 1].to_list()[:4]
-    # start_time = time()
-    #
-    # print('running stream')
-    # # cbpro_stream = cbpro_init_stream(in_symbols)
-    #
-    # ticker_stream = CbProTickerStream(
-    #     stream=None,
-    #     stream_parser=CbProStreamParse,
-    #     fetch_price_data=yft.yf_price_history_stream,
-    #     quote_file_path='live_quotes.json',
-    #     history_path=r'C:\Users\bjahn\PycharmProjects\algo_data',
-    #     interval=1
-    # )
-    # ticker_stream.run_stream(['ADA-USD', 'ETH-USD'], cbpro_init_stream, yft.yf_get_delays)
+# daily_scan = pd.read_excel(r'C:\Users\Brian\OneDrive\algo_data\csv\cbpro_scan_out.xlsx')
+# in_symbols = daily_scan.symbol[daily_scan.score > 1].to_list()[:4]
+# start_time = time()
+#
+# print('running stream')
+# # cbpro_stream = cbpro_init_stream(in_symbols)
+#
+# ticker_stream = CbProTickerStream(
+#     stream=None,
+#     stream_parser=CbProStreamParse,
+#     fetch_price_data=yft.yf_price_history_stream,
+#     quote_file_path='live_quotes.json',
+#     history_path=r'C:\Users\bjahn\PycharmProjects\algo_data',
+#     interval=1
+# )
+# ticker_stream.run_stream(['ADA-USD', 'ETH-USD'], cbpro_init_stream, yft.yf_get_delays)
