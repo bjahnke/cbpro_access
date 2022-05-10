@@ -303,7 +303,8 @@ class CbproClient:
         data = data.sort_index()
         return data[["open", "high", "close", "low", "volume"]]
 
-    def download_price_data(self, interval, symbols=None, interval_type="m", back_shift=None, num_bars: int = None, ):
+    def download_price_data(self, interval, symbols=None, interval_type="m",
+                            back_shift=None, num_bars: int = None, to_file: t.Optional[str] = None):
         """get data for a set of symbols, given as a single table with multiindex columns seperated by symbol name"""
         if symbols is None:
             symbols = self.usd_products['id'].to_list()
@@ -318,6 +319,10 @@ class CbproClient:
             print(f'{symbol} ({i}/{len(symbols)})')
 
         dfs_merged = reduce(lambda left, right: left.join(right, how='outer'), dfs)
+
+        if to_file is not None:
+            dfs_merged.to_csv(to_file)
+
         return dfs_merged
 
     # def extended_price_history(
