@@ -273,7 +273,17 @@ class CbproClient:
     def price_history(
             self, symbol: str, interval: int, interval_type="m", back_shift=0, num_bars=300,
     ) -> pd.DataFrame:
-
+        """
+        Get price history for a given symbol. CB pro limits data retrieval to 300 bars.
+        If input requests more than 300, this function will automatically hit the broker
+        api multiple times to get the desired price history.
+        :param symbol:
+        :param interval:
+        :param interval_type:
+        :param back_shift:
+        :param num_bars:
+        :return:
+        """
         interval_seconds = _INTERVAL[f"{interval}{interval_type}"]
         history_params = {
             "granularity": interval_seconds,
@@ -308,17 +318,11 @@ class CbproClient:
         """get data for a set of symbols, given as a single table with multiindex columns seperated by symbol name"""
         if symbols is None:
             symbols = self.usd_products['id'].to_list()
-        dfs = []
-        for i, symbol in enumerate(symbols):
-            price_data = self.price_history(
-                symbol=symbol, interval=interval, interval_type=interval_type,
-                back_shift=back_shift, num_bars=num_bars
-            )
-            price_data.columns = pd.MultiIndex.from_product([[symbol], price_data.columns])
-            dfs.append(price_data)
-            print(f'{symbol} ({i}/{len(symbols)})')
 
-        dfs_merged = reduce(lambda left, right: left.join(right, how='outer'), dfs)
+        dfs_merged = super().download_price_data(
+            symbols=symbols, interval=interval, interval_type=interval_type,
+            back_shift=back_shift, num_bars=num_bars
+        )
 
         if to_file is not None:
             dfs_merged.to_csv(to_file)
